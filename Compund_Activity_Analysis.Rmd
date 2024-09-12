@@ -1,0 +1,505 @@
+---
+title: "Compound_Activity_Analysis"
+author: "SL Mondragón-González"
+date: "Summer 2024"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+
+# Setup: Load necessary libraries
+rm(list = ls())
+cat("\014")
+
+library(ggpubr)  # For Levene's test
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(car) # For Anova with mixed models
+library(corrplot)
+library(ggbiplot)
+library(ggthemes)
+library(skimr)
+library(psych)
+library (pwr)
+
+```
+
+## Introduction
+
+This R Notebook is dedicated to the analysis of experimental data obtained from a series of experiments designed to evaluate the effects of various DREADD compounds administered at different doses over time on the activity levels of test subjects. The subjects' activity metrics were derived from video recordings by processing the body center's instantaneous speed. These metrics were then analyzed to assess the potential impacts of the compounds, focusing on key measurements such as:
+
+-   **Activity classifications:**
+
+    -   **High activity (%)**: The percentage of time the subject's activity was classified as high, indicating periods of significant movement. It helps to evaluate the extent to which the compound increases or maintains high levels of activity.
+
+    -   **Low activity (%)**: The percentage of time the subject's activity was classified as low, reflecting periods of minimal movement. It is useful for understanding whether the compound induces lethargy or reduces overall activity.
+
+    -   **Occlusion (%)**: The percentage of time during which the subject could not be tracked due to occlusion, meaning the subject's body center was not visible or measurable. This metric is essential for assessing the quality and reliability of the tracking data.
+
+-   **Mean (px/s)**: The mean speed of the subject's body center over the entire recording period. This provides a general sense of the subject's overall activity level and is a direct indicator of how the compound might influence average movement speed.
+
+-   **Standard deviation (px/s)**: This measures the variability in the subject's speed, reflecting how consistent or varied their activity was during the recording period. High variability might indicate erratic behavior, while low variability could suggest consistent activity levels.
+
+-   **Activity Distribution Ratios (ADR):**
+
+    -   **ADR Low/High+Occ**: The Activity Distribution Ratio (ADR) between low activity and the combined time of high activity and occlusion periods. This ratio helps to understand the relative dominance of low activity compared to periods of high activity or times when the subject was not trackable.
+
+    -   **ADR Low/High**: The Activity Distribution Ratio (ADR) between low and high activity periods. This metric is crucial for comparing the balance between periods of low and high activity, indicating how a compound may shift the subject's behavior towards more or less activity.
+
+-   **Skewness:**
+
+    -   **Skewness low**: The skewness of the low activity distribution over time, indicating whether low activity periods are more concentrated at certain times during the experiment. A positive skew suggests that low activity occurs more frequently towards the end, while a negative skew indicates it is more common at the beginning.
+
+    -   **Skewness high**: The skewness of the high activity distribution over time, similar to the low activity skewness but focusing on periods of high activity. This metric helps to determine whether high activity is more likely at specific times during the experiment.
+
+-   **Normalized entropy**: This metric represents the entropy of the activity distribution across the entire recording, normalized to a maximum entropy value. Entropy measures the randomness or unpredictability of the activity states (high, low, occlusion). A higher normalized entropy suggests a more even distribution of these states, while lower entropy indicates that one state is dominant."
+
+## Objectives
+
+The primary objectives of this analysis are:
+
+1.  **Quantify the Effects of Compounds:** Determine whether the different compounds have a significant impact on various activity metrics, including high activity percentage, low activity percentage, and mean speed.
+
+2.  **Assess Dose-Response Relationships:** Explore how different doses influence the observed effects, and whether there is an interaction between compound type and dose.
+
+3.  **Time-Dependent Changes:** Analyze how activity metrics evolve over time post-injection, to identify any time-dependent effects of the compounds.
+
+4.  **Multivariate Analysis:** Perform Principal Component Analysis (PCA) to reduce dimensionality and identify the main drivers of variability in the activity metrics.
+
+5.  **Statistical Significance:** Apply appropriate statistical tests, such as ANOVA and mixed-effects models, to determine the significance of observed differences and relationships.
+
+## 1. **Load and Inspect the Data**
+
+```{r}
+# Load the data
+data <- read.csv("D:/OneDrive - ICM/Liz_NeuroMatlab/DLC_PoseAnalysis/Results/results_set1.csv", sep = ";")
+
+# View the first few rows to ensure the data has been loaded correctly
+# head(data)
+
+# Separate the relevant metadata (experiment descriptors) and the actual results
+metadata <- data[, 1:4]   # Columns 1 to 4: ID, Compound, Dose, Post-injection time
+results <- data[, 11:20]  # Columns 11 to 20: High activity percentage to entropy
+
+# Convert the Compound column to a factor and Dose to numeric
+metadata$Compound <- as.factor(metadata$Compound)
+metadata$Dose..mg.kg. <- as.numeric(metadata$Dose..mg.kg.)
+
+# Create a new column combining Compound and Dose
+metadata <- metadata %>%
+  mutate(Compound_Dose = paste(Compound, Dose..mg.kg., sep = "_"))
+
+# Check the structure of the metadata and results to confirm they are as expected
+# str(metadata)
+# str(results)
+
+# View summary statistics of the results to identify any potential issues or patterns
+summary_results <- describe(results)
+summary_results
+
+# Integrate metadata with results for further analysis
+data_combined <- cbind(metadata, results)
+
+# Custom order for Compound_Dose
+custom_order <- c("21_1", "21_3", "21_5", "21_10",
+                  "j52nws_0.5", "j52nws_1", "j52ws_0.5", "j52ws_1",
+                  "j60nws_0.5", "j60nws_1", "j60ws_0.5", "j60ws_1",
+                  "cno_3", "Saline_0")
+
+# Set the levels of the Compound_Dose factor
+data_combined$Compound_Dose <- factor(data_combined$Compound_Dose, levels = custom_order)
+
+```
+
+## 2. **Exploratory Data Analysis (EDA)**
+
+Question 1: What is the distribution of activity metrics across different compounds, doses, and time point
+
+```{r}
+
+# Summary statistics for key metrics grouped by Compound_Dose and Post.injection..h.
+summary_stats <- data_combined %>%
+  group_by(Compound_Dose, Post.injection..h.) %>%
+  summarise(
+    mean_high_activity = round(mean(High.activity.percentage, na.rm = TRUE), 2),
+    mean_low_activity = round(mean(Low.activity.percentage, na.rm = TRUE), 2),
+    mean_occlusion = round(mean(Occlusion.percentage, na.rm = TRUE), 2),
+    mean_speed = round(mean(Mean, na.rm = TRUE), 2),
+    sd_speed = round(mean(Std.deviation, na.rm = TRUE), 2),
+    mean_adr_low_high_occ = round(mean(ADR.Low.High.Occ, na.rm = TRUE), 2),
+    mean_adr_low_high = round(mean(ADR.Low.High, na.rm = TRUE), 2),
+    mean_skewness_low = round(mean(skewness_low, na.rm = TRUE), 2),
+    mean_skewness_high = round(mean(skewness_high, na.rm = TRUE), 2),
+    mean_entropy = round(mean(normalized.entropy, na.rm = TRUE), 2)
+  )
+
+# Print the summary statistics
+print(summary_stats)
+
+```
+
+## 2.1 **Plotting**
+
+```{r}
+# Define custom color palette
+color_palette <- c(
+  "21_1" = "#fae3e3",   # Misty rose
+  "21_3" = "#f7d4bc",   # Desert sand
+  "21_5" = "#cfa5b4",   # Pink lavander
+  "21_10" = "#c98bb9",  # African violet
+  "j52nws_0.5" = "#ffbf69",  # Hunyadi yellow
+  "j52nws_1" = "#ff9f1c",    # Orange peel
+  "j52ws_0.5" = "#cbf3f0",   # Mint green
+  "j52ws_1" = "#2ec4b6",     # Light sea green
+  "j60nws_0.5" = "#e2f1af",  # Tea green
+  "j60nws_1" = "#e3d888",    # Flax
+  "j60ws_0.5" = "#a5be00",   # Apple green
+  "j60ws_1" = "#679436",     # Asparagus
+  "cno_3" = "#6096ba",       # Air blue
+  "Saline_0" = "#8b8c89"     # Battleship gray
+)
+
+# Function to generate the plot
+# Function to generate the plot with consistent y-axis limits
+plot_metric <- function(metric_name, y_label) {
+  # Calculate the global min and max for the metric across all groups
+  y_min <- min(data_combined[[metric_name]], na.rm = TRUE)
+  y_max <- max(data_combined[[metric_name]], na.rm = TRUE)
+  
+  ggplot(data_combined, aes(x = as.factor(Post.injection..h.), y = .data[[metric_name]], fill = Compound_Dose)) +
+    geom_boxplot() +
+    facet_wrap(~ Compound_Dose, scales = "fixed", ncol = 4) +
+    labs(title = paste(y_label, "by Time Point and Compound+Dose"),
+         x = "Post-Injection Time (hours)", y = y_label) +
+    scale_fill_manual(values = color_palette) +
+    expand_limits(y = c(y_min, y_max)) +  # Apply the global min and max to all subplots
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 0, hjust = 1),
+      strip.text = element_blank(),  # Remove facet labels
+      panel.spacing = unit(0.5, "lines"),  # Control spacing between panels
+      axis.line = element_line(color = "black"),  # Ensure axis lines are visible
+      axis.ticks = element_line(color = "black"),  # Ensure ticks are visible
+      panel.border = element_rect(fill = NA, color = "black")  # Add a border around each panel
+    )
+}
+
+
+# Generate plots for all 10 metrics
+p_high_activity <- plot_metric("High.activity.percentage", "High Activity Percentage")
+p_low_activity <- plot_metric("Low.activity.percentage", "Low Activity Percentage")
+p_mean_speed <- plot_metric("Mean", "Mean Speed (px/s)")
+p_sd_speed <- plot_metric("Std.deviation", "Speed Standard Deviation (px/s)")
+p_occlusion <- plot_metric("Occlusion.percentage", "Occlusion Percentage")
+p_adr_low_high_occ <- plot_metric("ADR.Low.High.Occ", "ADR Low/High+Occ")
+p_adr_low_high <- plot_metric("ADR.Low.High", "ADR Low/High")
+p_skewness_low <- plot_metric("skewness_low", "Skewness Low")
+p_skewness_high <- plot_metric("skewness_high", "Skewness High")
+p_entropy <- plot_metric("normalized.entropy", "Normalized Entropy")
+
+# Display the plots
+p_high_activity
+p_low_activity
+p_mean_speed
+p_sd_speed
+p_occlusion
+p_adr_low_high_occ
+p_adr_low_high
+p_skewness_low
+p_skewness_high
+p_entropy
+
+```
+
+## 3. Visualize correlation matrix
+
+```{r}
+
+# Calculate the correlation matrix for the metrics
+metrics <- c("High.activity.percentage", "Low.activity.percentage", "Mean", "Std.deviation","Occlusion.percentage",
+             "ADR.Low.High.Occ", "ADR.Low.High", "skewness_low", "skewness_high", "normalized.entropy")
+
+correlation_matrix <- cor(data_combined[, metrics], use = "complete.obs")
+
+# Plot the correlation matrix as a heatmap
+library(corrplot)
+corrplot(correlation_matrix, method = "color", type = "lower", 
+         tl.col = "black", tl.srt = 45, 
+         addCoef.col = "black", number.cex = 0.7)
+
+```
+
+**Reminder:** Correlation close to +1 means there is a strong positive correlation between the two variables, this suggests that the two variables move in the same direction.
+
+**Main results and their interpretation:**
+
+-   **Std.deviation and Mean**: the average speed of the subject increases, the variability in their speed also increases suggesting that subjects that are moving faster on average tend to have more variability in their speed, indicating that higher speed is associated with more erratic or varied movement patterns.
+
+-   **ADR Low/High+Occlusion and Low activity percentage**: the percentage of time spent in low activity increases, the ratio of low activity to other states also increases. *What This Means:* When subjects spend more time in low activity, it significantly dominates their behavior relative to periods of high activity and times when they are not trackable. --\> Not a surprise, maybe use one metrics only for the anova.
+
+-   **ADR Low/High and Low activity percentage:** the percentage of time spent in low activity increases, the ratio of low to high activity also increases. *What This Means*: Subjects that spend more time in low activity have a much greater proportion of low activity compared to high activity, reinforcing the idea that certain compounds might be reducing overall activity levels.--\> Not a surprise, maybe use one metrics only for the anova.
+
+-   **ADR Low/High and Low and ADR Low/High+Occlusion:** as the ratio of low to high activity increases, so does the ratio of low activity to the combination of high activity and occlusion. *What this means:* This correlation indicates that the dominance of low activity is consistent whether considering just high activity or including periods of occlusion. It reinforces that subjects with higher low activity tend to have lower periods of high activity, regardless of occlusion.--\> Not a surprise, maybe use one metrics only for the anova.
+
+-   **Normalized entropy and Occlusion percentage**: Higher occlusion rates, where the subject's movement cannot be tracked, lead to a more unpredictable and evenly distributed activity state. This could indicate that occlusion introduces uncertainty in tracking, leading to higher entropy values. --\> Not a surprise, focus on the outliers and verify the problem in the video, maybe identify a slightly different time window?
+
+**General conclusion:**
+
+The analysis reveals that subjects with higher average speeds exhibit more variable movement patterns, suggesting that increased activity often leads to more erratic behavior. Additionally, higher low activity percentages correlate strongly with higher ratios of low activity to other states. To avoid multicollinearity and focus on the most informative metrics, I would suggest to concentrate on the **`ADR Low/High + Occlusion`** metric in further analyses, and exclude redundant metrics like `ADR Low/High`, and `Low activity percentage` from the ANOVA.
+
+Moreover, the observation that higher occlusion rates lead to increased randomness in activity distribution indicates potential challenges in predicting subject behavior when tracking is incomplete. Recordings with high occlusion should be reviewed to identify and address any underlying issues. Depending on the findings, it may be necessary to consider removing these recordings from the analysis or selecting alternative time windows, even if they differ from those used in other experiments, to ensure the reliability of the data.
+
+## 4. PCA Biplot
+
+**Reminder:** This is a useful analysis to:
+
+1.  Identify which metrics are most influential in explaining the variance in my data.
+
+2.  Reduce dimensionality: How many metrics I need to consider (the first principal components). These are the ones I should focus, and ignore the others, to simplify my analysis.
+
+3.  Are there distinct groups of observations? The positions of the points (scores) can reveal if there are natural groupings of your subjects or experiments. This might suggest that certain compounds or doses lead to similar activity patterns.
+
+```{r}
+# Load necessary libraries
+library(ggbiplot)
+library(ggplot2)
+
+# List of metrics to include in PCA
+metrics <- c("High.activity.percentage", "Mean", 
+              "Occlusion.percentage", "ADR.Low.High.Occ", 
+              "skewness_low", "skewness_high", "normalized.entropy")
+
+# Perform PCA on the standardized metrics
+pca_result <- prcomp(data_combined[, metrics], scale. = TRUE)
+
+# Summary of PCA to see the proportion of variance explained by each component
+summary(pca_result)
+
+# Plot the PCA biplot
+pca_biplot <- ggbiplot(pca_result, ellipse = TRUE, obs.scale = 1, var.scale = 1,
+                       groups = data_combined$Compound_Dose, 
+                       varname.size = 4, alpha = 0.6) +
+  scale_color_discrete(name = '') +
+  theme_minimal() +
+  labs(title = "PCA Biplot of Activity Metrics",
+       x = paste("Principal Component 1 (", round(summary(pca_result)$importance[2,1] * 100, 1), "%)", sep = ""),
+       y = paste("Principal Component 2 (", round(summary(pca_result)$importance[2,2] * 100, 1), "%)", sep = ""))
+
+# Print the biplot
+print(pca_biplot)
+
+# Extract the loadings (eigenvectors) for each principal component
+loadings <- pca_result$rotation
+
+# View the loadings for PC1 and PC2
+loadings_pc1_pc2 <- loadings[, 1:2]
+print(loadings_pc1_pc2)
+
+# Identify the metrics with the highest absolute loadings on PC1 and PC2
+high_loadings_pc1 <- sort(abs(loadings_pc1_pc2[, 1]), decreasing = TRUE)
+high_loadings_pc2 <- sort(abs(loadings_pc1_pc2[, 2]), decreasing = TRUE)
+
+cat("Metrics contributing most to PC1:\n")
+print(names(high_loadings_pc1[1:3])) # Top 3 metrics for PC1
+
+cat("\nMetrics contributing most to PC2:\n")
+print(names(high_loadings_pc2[1:3])) # Top 3 metrics for PC2
+
+```
+
+**Main results and their interpretation:**
+
+-   **Arrows (Loadings):** Metrics with longer arrows are more influential. Metrics pointing in the same direction are positively correlated. Mean speed seems to not be influential --\> Remove it.
+
+-   **Points (Scores):** Clustering of points indicates that those observations have similar patterns. In this case no clear cluster appear in the data.
+
+-   **Axes (PC):**
+
+    -   **ADR.Low.High.Occ**: This metric has the highest loading on PC1, meaning it strongly influences this principal component. It captures the relationship between low activity, high activity, and occlusion, suggesting that PC1 is heavily associated with this balance.
+
+    -   **Normalized.entropy:** This metric also contributes significantly to PC1, indicating that PC1 reflects the randomness or unpredictability in the activity states. High entropy suggests a more even distribution across different activity states (high, low, occlusion).
+
+    -   **Occlusion.percentage**: The presence of Occlusion.percentage here suggests that PC1 is also influenced by how much time the subjects were not trackable.
+
+    -   **Skewness_low**: This metric, contributing most to PC2, indicates that PC2 captures the temporal distribution of low activity. It shows whether low activity is more concentrated at certain times.
+
+    -   **Skewness_high**: Similar to `skewness_low`, this metric reflects the temporal distribution of high activity. Together, they suggest that PC2 is focused on the timing or distribution patterns of activity states.
+
+    -   **Occlusion.percentage**: The fact that `Occlusion.percentage` also contributes significantly to PC2 indicates that this component is not only about the distribution of activity but also involves the periods when tracking was unreliable (not surprising, again).
+
+-   **General conclusion:** The metrics identified: `ADR.Low.High.Occ`, `normalized.entropy`, `skewness_low`, `skewness_high`, and `Occlusion.percentage` are the key drivers of variability in your dataset and should be the focus of the subsequent analysis. We went from 10 metrics to 5. As expected `Occlusion.percentage` plays a dual role in the data, influencing both the overall distribution of activity states and their timing, reinforcing the idea that bujects /timepoints with high occlusion should be handled differently (something to do about those)
+
+## 5. Two-way ANOVA
+
+In this analysis, we use a two-way ANOVA to understand how different compounds and their doses, and the time after injection affect various activity metrics of the subjects. Specifically, the two-way ANOVA helps us answer two key questions:
+
+**Main Effects:**
+
+-   Does the type of compound and dose affect the subjects' activity?
+
+-   Does the time after injection (e.g., 1 hour, 2 hours) affect the subjects' activity?
+
+**Interaction Effect:**
+
+-   Does the effect of the compound and its dose change over time? For example, does a particular compound increase activity more at 2 hours post-injection than at 1 hour?
+
+```{r}
+# Ensure that Compound_Dose and Post.injection..h. are factors
+data_combined$Compound_Dose <- as.factor(data_combined$Compound_Dose)
+data_combined$Post.injection..h. <- as.factor(data_combined$Post.injection..h.)
+
+# Perform Two-Way ANOVA, Tukey's HSD, and Power Analysis for each metric
+two_way_anova_results <- list()
+tukey_hsd_results <- list()
+diagnostic_plots <- list()  # To store diagnostic plots
+power_analysis_results <- list()  # To store power analysis results
+
+metrics <- c("Occlusion.percentage", "ADR.Low.High.Occ", 
+             "skewness_low", "skewness_high", "normalized.entropy")
+
+for (metric in metrics) {
+  cat("\n\nAnalyzing Metric:", metric, "\n")
+  
+  # Build the ANOVA model with both factors
+  anova_result <- aov(data_combined[[metric]] ~ Compound_Dose * Post.injection..h., data = data_combined)
+  
+  # Store the summary of the ANOVA results
+  two_way_anova_results[[metric]] <- summary(anova_result)
+  
+  # Perform Tukey's HSD post-hoc test
+  tukey_result <- tryCatch({
+    TukeyHSD(anova_result)
+  }, error = function(e) {
+    message("Error in TukeyHSD for metric: ", metric, "\n", e)
+    return(NULL)
+  })
+  
+  # Store the TukeyHSD results
+  tukey_hsd_results[[metric]] <- tukey_result
+  
+  # Diagnostic plots: Residuals vs Fitted and Q-Q plot
+  par(mfrow = c(1, 2))
+  plot(anova_result, which = 1:2, main = metric)
+  
+  # Store diagnostic plots
+  diagnostic_plots[[metric]] <- recordPlot()
+
+  # Test for homogeneity of variance (Levene's Test)
+  levene_test <- leveneTest(data_combined[[metric]] ~ Compound_Dose * Post.injection..h., data = data_combined)
+  cat("\nLevene's Test for Homogeneity of Variance:\n")
+  print(levene_test)
+  
+  # Check for multicollinearity using VIF
+  cat("\nVariance Inflation Factor (VIF):\n")
+  print(vif(anova_result))
+
+  # Power Analysis
+  # Calculate the effect size based on the sum of squares between and within
+  ss_between <- sum(anova_result$`Sum Sq`[c(1, 2)])  # Sum of squares for Compound_Dose and interaction
+  ss_within <- sum(anova_result$`Sum Sq`[-c(1, 2)])  # Sum of squares for Residuals
+  df_between <- sum(anova_result$Df[c(1, 2)])  # Degrees of freedom for Compound_Dose and interaction
+  df_within <- sum(anova_result$Df[-c(1, 2)])  # Degrees of freedom for Residuals
+  
+  # Check if any of these values are NA or problematic
+  if (is.na(ss_between) || is.na(ss_within) || ss_within == 0 || df_within == 0) {
+    cat("Warning: Issue with sum of squares or degrees of freedom in metric:", metric, "\n")
+    next  # Skip to the next metric
+  }
+  
+  effect_size <- sqrt((ss_between / df_between) / (ss_within / df_within))  # Correct calculation of Cohen's f
+  
+  if (is.na(effect_size) || effect_size <= 0) {
+    cat("Warning: Invalid effect size calculated for metric:", metric, "\n")
+    next  # Skip to the next metric
+  }
+  
+  # Calculate power using pwr.anova.test
+  n_groups <- length(unique(data_combined$Compound_Dose)) * length(unique(data_combined$Post.injection..h.))
+  n_per_group <- nrow(data_combined) / n_groups  # Calculate the number of observations per group
+  power_analysis <- pwr.anova.test(k = n_groups, n = n_per_group, f = effect_size, sig.level = 0.05)
+  
+  # Store power analysis results
+  power_analysis_results[[metric]] <- power_analysis
+  cat("\nPower Analysis for Metric:", metric, "\n")
+  print(power_analysis)
+}
+
+# Print ANOVA results for all metrics
+for (metric in metrics) {
+  cat("\n\nTwo-Way ANOVA Results for Metric:", metric, "\n")
+  print(two_way_anova_results[[metric]])
+  cat("\n------------------------------------------------------------\n")
+  
+  # Print only significant Tukey HSD results
+  if (!is.null(tukey_hsd_results[[metric]])) {
+    cat("\nSignificant Tukey HSD Post-Hoc Results for Metric:", metric, "\n")
+    
+    # Extract the significant comparisons
+    tukey_result <- tukey_hsd_results[[metric]]
+    significant_comparisons <- list()
+    
+    for (comparison in names(tukey_result)) {
+      significant <- tukey_result[[comparison]][, "p adj"] < 0.05
+      if (any(significant)) {
+        significant_comparisons[[comparison]] <- tukey_result[[comparison]][significant, ]
+      }
+    }
+    
+    # Print only the significant comparisons
+    if (length(significant_comparisons) > 0) {
+      print(significant_comparisons)
+    } else {
+      cat("No significant post-hoc comparisons.\n")
+    }
+    
+    cat("\n------------------------------------------------------------\n")
+  }
+}
+
+# Interaction Plots
+for (metric in metrics) {
+  interaction.plot(data_combined$Post.injection..h., 
+                   data_combined$Compound_Dose, 
+                   data_combined[[metric]],
+                   col = 1:length(unique(data_combined$Compound_Dose)),
+                   lty = 1, pch = 19, type = "b", 
+                   main = paste("Interaction Plot for", metric),
+                   xlab = "Post-Injection Time (h)", 
+                   ylab = metric)
+}
+
+# Display all diagnostic plots
+for (metric in metrics) {
+  cat("\nDiagnostic Plots for Metric:", metric, "\n")
+  replayPlot(diagnostic_plots[[metric]])
+}
+
+# Display power analysis results
+for (metric in metrics) {
+  cat("\nPower Analysis Results for Metric:", metric, "\n")
+  print(power_analysis_results[[metric]])
+}
+
+```
+
+**Main results and their interpretation:**
+
+-   **ANOVA Results:**
+
+    -   **`ADR.Low.High.Occ:`** There were no significant effects of `Compound_Dose`, `Post.injection..h.`, or their interaction on the `ADR.Low.High.Occ` metric (relative dominance of low activity compared to periods of high activity or times when the subject was not trackable).
+
+        -   **Tukey HSD Post-Hoc Test**: Despite the non-significant ANOVA results, some specific comparisons in the post-hoc analysis were significant. For example, `j52ws_1:6h` was significantly different from `21_1:0`, `j52ws_0.5:1`, and other comparisons, indicating that under certain conditions, this compound dose and time point combination affects the activity distribution differently from other.
+
+    -   **`Skewness low and skewness high`**👍 There were no significant effects of Skewness low (indicating whether low activity periods are more concentrated at certain times during the expeirment) nor Skewness high (similar lo skewness low but focusing on periods of high activity). For both metrics the Tukey HSD post-hoc test did not identify any pairwise differences, confirming the ANOVA results.
+
+    -   **`normalized.entropy:`** Compound-dose had a significant effect on `normalized.entropy` (F(13, 239) = 3.224, p \< 0.001), suggesting that different compound doses impact the randomness or unpredictability of the subjects' activity states. Neither `Post.injection..h.` nor the interaction between `Compound_Dose` and `Post.injection..h.` had a significant effect.
+
+        ❗ In the Correlation Matrix we saw that normalized entropy is positively correlated to Occlusion percentage. So might need to check occluded videos before taking as granted this result.
+
+        -   **Tukey HSD Post-Hoc Test**: The post-hoc test revealed significant differences between several compound-dose pairs. For instance, `j52ws_0.5` showed higher normalized entropy compared to `21_1` and `21_3`, indicating that this compound dose leads to more unpredictable behavior in the subjects. On the other hand, `j52ws_1`, `j60nws_0.5`, and `j60ws_1` showed lower entropy compared to `j52ws_0.5`, suggesting that these doses result in more predictable activity patterns.
+
+    -   Occlusion metrics: If we take literal the results, we might think that the significant differences found in the post-hoc tests suggest that certain compound doses can either increase occlusion, or affect the entropy of the subject's entropy. But we know well that this might just be an experimental problem –\> might need to review the videos with highest occlusion!!
+
+#TODO: correct power analysis, and separate it from anova 
+
