@@ -1,5 +1,5 @@
 ---
-title: "Compound_Activity_Analysis"
+title: "Compound_Activity_Mixed_Effects_Model"
 author: "SL Mondragón-González"
 date: "Summer 2024"
 output: html_notebook
@@ -27,7 +27,8 @@ library (pwr)
 
 ## Introduction
 
-This R Notebook is dedicated to the analysis of experimental data obtained from a series of experiments designed to evaluate the effects of various DREADD compounds administered at different doses over time on the activity levels of test subjects. The subjects' activity metrics were derived from video recordings by processing the body center's instantaneous speed. These metrics were then analyzed to assess the potential impacts of the compounds, focusing on key measurements such as:
+This R Notebook is dedicated to the analysis of experimental data obtained from a series of experiments designed to evaluate the effects of various DREADD compounds administered at different doses over time on the activity levels of test subjects. The subjects' activity metrics were derived from video recordings by processing the body center's instantaneous speed. These metrics are analyzed to assess the potential impacts of the compounds, focusing on key measurements such as:
+
 
 -   **Activity classifications:**
 
@@ -55,6 +56,12 @@ This R Notebook is dedicated to the analysis of experimental data obtained from 
 
 -   **Normalized entropy**: This metric represents the entropy of the activity distribution across the entire recording, normalized to a maximum entropy value. Entropy measures the randomness or unpredictability of the activity states (high, low, occlusion). A higher normalized entropy suggests a more even distribution of these states, while lower entropy indicates that one state is dominant."
 
+### Additional Factors and Controls:
+To ensure reliable analysis, two control conditions are incorporated:
+
+Baseline activity: Measurements of activity metrics before the injection of any compound, used to account for the subject's normal activity levels.
+Saline injections: A control condition where saline was injected instead of a compound, to determine whether observed effects are due to the compounds or just the injection process.
+
 ## Objectives
 
 The primary objectives of this analysis are:
@@ -73,7 +80,7 @@ The primary objectives of this analysis are:
 
 ```{r}
 # Load the data
-data <- read.csv("D:/OneDrive - ICM/Liz_NeuroMatlab/DLC_PoseAnalysis/Results/results_set1.csv", sep = ";")
+data <- read.csv("D:/OneDrive - ICM/Liz_NeuroMatlab/DLC_PoseAnalysis/Results/results.csv", sep = ",")
 
 # View the first few rows to ensure the data has been loaded correctly
 # head(data)
