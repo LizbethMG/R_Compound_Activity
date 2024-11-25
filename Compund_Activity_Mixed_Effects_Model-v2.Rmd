@@ -141,17 +141,16 @@ The primary objectives of this analysis are:
     time post-injection to identify any time-dependent effects of the
     compounds and how these compare to the saline injection.
 
-4.  **Control for Baseline Activity:** Treat baseline activity as a
-    covariate in the model to control for individual differences in
-    normal activity levels and assess how post-injection effects differ
-    from baseline.
+4.  **Control for Baseline Activity:** 
 
 # II. Data preparation
 
 ## 1. Load and check data structure
 
 ```{r setup, include=FALSE}
+
 knitr::opts_chunk$set(echo = FALSE, cache = FALSE) # To remove code in HTML output
+
 rm(list = ls()) # Clear environment
 cat("\014") # Clear console
 
@@ -166,9 +165,11 @@ library(ggthemes) # Additional themes for ggplot
 library(skimr)    # Summary statistics
 library(psych)    # Descriptive statistics
 library(glmmTMB)
+
 ```
 
 ```{r, echo =FALSE}
+
 file_path = "D:/OneDrive - ICM/Liz_NeuroMatlab/DLC_PoseAnalysis/Results/results.csv"
 
 # Read the first line of the file
@@ -187,6 +188,8 @@ results <- data[, 11:20]  # Columns 11 to 20: High activity percentage to entrop
 
 # Convert the Compound column to a factor and Dose to numeric
 metadata$Compound <- as.factor(metadata$Compound)
+# Convert 'ID' to a factor
+metadata$ID <- as.factor(metadata$ID)
 
 # Convert 'Dose' to numeric by replacing commas with periods
 metadata$Dose..mg.kg. <- gsub(",", ".", metadata$Dose..mg.kg.)  # Replace commas with periods
@@ -277,15 +280,22 @@ data_combined <- data_combined %>%
 # Ensure 'Compound_Dose' is treated as a factor with levels based on the custom color palette
 data_combined$Compound_Dose <- factor(data_combined$Compound_Dose, levels = names(color_palette))
 
+
+
 # Function to generate the plot with consistent y-axis limits
 plot_metric <- function(metric_name, y_label) {
   # Calculate the global min and max for the metric across all groups
   y_min <- min(data_combined[[metric_name]], na.rm = TRUE)
   y_max <- max(data_combined[[metric_name]], na.rm = TRUE)
   
+   median_data <- data_combined %>%
+    group_by(Post.injection..h., Compound_Dose) %>%
+    summarize(median_value = median(.data[[metric_name]], na.rm = TRUE), .groups = 'drop')
+  
   ggplot(data_combined, aes(x = as.factor(Post.injection..h.), y = .data[[metric_name]], fill = Compound_Dose)) +
     geom_boxplot(outlier.shape = NA, alpha = 0.6) +  # Suppress outliers to avoid double plotting
-     geom_jitter(color = "#8b8c89", width = 0.2, alpha = 0.7) +   # Add jittered individual points
+    geom_line(data = median_data, aes(x = as.factor(Post.injection..h.), y = median_value, group = Compound_Dose, color = Compound_Dose), size = 1) +  # Connect the median values
+    geom_jitter(color = "black", width = 0.2, alpha = 0.7, size = 1) +   # Add jittered individual points
     facet_wrap(~ Compound_Dose, scales = "fixed", ncol = 4) +
     labs(title = paste(y_label, "by Time Point and Compound+Dose"),
          x = "Post-Injection Time (hours)", y = y_label) +
@@ -329,17 +339,12 @@ p_entropy
 
 ```
 
-#### 2.2 Assess Baseline homogeneity
+#### 2.2 Evaluate baseline Variability 
+In our data we have to handle a missing baseline. 
+Option 1: Assign the subject's average baseline (subject's baseline measurements are consistent across different sessions and are not influenced by factors such as time, prior treatments, or physiological changes)
+Option 2:  Exclude the Drug-Dose Combination for That Subject --> Not an optionbecause few subjects
 
-Assessing baseline homogeneity to help me decide if (1) I use baseline
-as a co variate in my models (controling for individual diferences at
-the start of the study) or (2) if I normalize the data to Baseline
-(focus on relative changes and eventually reduce variability).
 
---\> I decided to take it as covariate because in some cases
-normalization is not possible (baseline values are 0 --\> result INF)
-and I dont want to exclude them in my analisis nor adding a small
-constant to the baseline values to avoid division by 0.
 
 ```{r}
 
@@ -347,71 +352,79 @@ constant to the baseline values to avoid division by 0.
 
 # Assessing baseline homogeneity to decide if (1) I use baseline as a covariate in my models (controling for individual diferences at the start of the study) or (2) if I normalize the data to Baseline (focus on relative changes and eventually reduce variability).
 
+# Extract baseline data (Post.injection..h. == 0)
+baseline_data <- data_combined %>%
+  filter(Post.injection..h. == 0)
 
-# Load necessary libraries
-library(ggplot2)
-library(dplyr)
-library(tidyr)
+# Metrics to analyze
+metrics_to_analyze <- c("ADR.Low.High.Occ", "High.activity.percentage", 
+                        "skewness_low", "skewness_high", "normalized.entropy")
 
+# Extract baseline data
+baseline_data <- data_combined %>%
+  filter(Is_Baseline == 1) %>%
+  select(ID, Compound, Dose..mg.kg., Compound_Dose, all_of(metrics_to_analyze))
 
-# Filter the data to include only baseline observations
-baseline_data <- data_combined %>% filter(Is_Baseline == 1)
+# Check for missing baselines
+missing_baselines <- baseline_data %>%
+  filter(is.na(ADR.Low.High.Occ) | is.na(High.activity.percentage) |
+           is.na(skewness_low) | is.na(skewness_high) | is.na(normalized.entropy))
 
-# List of variables to perform the Kruskal-Wallis test on
-variables <- c(
-  "High.activity.percentage",
-  "Low.activity.percentage",
-  "Occlusion.percentage",
-  "Mean",
-  "Std.deviation",
-  "ADR.Low.High.Occ",
-  "ADR.Low.High",
-  "skewness_low",
-  "skewness_high",
-  "normalized.entropy"
-)
+# View missing baselines
+missing_baselines
 
-# Store results in a list for later visualization
-results <- list()
+# Calculate descriptive statistics for each subject
+baseline_stats <- baseline_data %>%
+  group_by(ID) %>%
+  summarise(
+    count = n(),
+    mean_ADR = mean(ADR.Low.High.Occ, na.rm = TRUE),
+    sd_ADR = sd(ADR.Low.High.Occ, na.rm = TRUE),
+    cv_ADR = (sd_ADR / mean_ADR) * 100,
+    mean_HighActivity = mean(High.activity.percentage, na.rm = TRUE),
+    sd_HighActivity = sd(High.activity.percentage, na.rm = TRUE),
+    cv_HighActivity = (sd_HighActivity / mean_HighActivity) * 100,
+    mean_SkewnessLow = mean(skewness_low, na.rm = TRUE),
+    sd_SkewnessLow = sd(skewness_low, na.rm = TRUE),
+    cv_SkewnessLow = (sd_SkewnessLow / mean_SkewnessLow) * 100,
+    mean_SkewnessHigh = mean(skewness_high, na.rm = TRUE),
+    sd_SkewnessHigh = sd(skewness_high, na.rm = TRUE),
+    cv_SkewnessHigh = (sd_SkewnessHigh / mean_SkewnessHigh) * 100,
+    mean_Entropy = mean(normalized.entropy, na.rm = TRUE),
+    sd_Entropy = sd(normalized.entropy, na.rm = TRUE),
+    cv_Entropy = (sd_Entropy / mean_Entropy) * 100
+  )
 
-# Loop through each variable and perform the Kruskal-Wallis test
-for (var in variables) {
+# View baseline statistics
+print(baseline_stats)
 
-  # Construct the formula for the Kruskal-Wallis test
-  formula <- as.formula(paste(var, "~ Compound"))
-  
-  # Perform the test
-  kruskal_test_result <- kruskal.test(formula, data = baseline_data)
-  
-  # Save results
-  results[[var]] <- kruskal_test_result$p.value
-  
-  # Interpret the result
-  if (kruskal_test_result$p.value > 0.05) {
-    cat(var, ": baseline is homogenous across the different groups (p-value > 0.05).\n\n")
-  } else {
-    cat(var, ": baseline is NOT homogenous across the different groups (p-value <= 0.05).\n\n")
-  }
+# Visualize baseline variability for each metric
+# Function to plot baseline measurements per subject
+plot_baseline_variability <- function(metric_name, y_label) {
+  ggplot(baseline_data, aes(x = ID, y = .data[[metric_name]])) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.6, fill = "#69b3a2") +
+    geom_jitter(color = "black", width = 0.2, alpha = 0.7, size = 1) +
+    labs(title = paste("Baseline", y_label, "by Subject"),
+         x = "Subject ID", y = y_label) +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
 }
 
-# Reshape the data for easier plotting
-baseline_long <- baseline_data %>%
-  select(Compound, all_of(variables)) %>%
-  pivot_longer(cols = all_of(variables), names_to = "Variable", values_to = "Value")
+# Plot for each metric
+p_ADR <- plot_baseline_variability("ADR.Low.High.Occ", "ADR Low/High+Occ")
+p_HighActivity <- plot_baseline_variability("High.activity.percentage", "High Activity (%)")
+p_SkewnessLow <- plot_baseline_variability("skewness_low", "Skewness Low")
+p_SkewnessHigh <- plot_baseline_variability("skewness_high", "Skewness High")
+p_Entropy <- plot_baseline_variability("normalized.entropy", "Normalized Entropy")
 
-# Create a faceted boxplot
-ggplot(baseline_long, aes(x = Compound, y = Value)) +
-  geom_boxplot(aes(fill = Compound)) +
-  facet_wrap(~ Variable, scales = "free_y", ncol = 3) +
-  labs(title = "Baseline Homogeneity Across Variables",
-       x = "Compound",
-       y = "Value") +
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5),
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        strip.text = element_text(size = 10, face = "bold"),
-        legend.position = "none") +
-  scale_fill_brewer(palette = "Set3")
+# Display the plots
+print(p_ADR)
+print(p_HighActivity)
+print(p_SkewnessLow)
+print(p_SkewnessHigh)
+print(p_Entropy)
 ```
 
 #### 2.3 Normality test

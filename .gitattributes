@@ -1,0 +1,5 @@
+# Exclude HTML files from language statistics
+*.html linguist-generated=true
+
+# Treat R Markdown files as R code
+*.Rmd linguist-language=R
